@@ -28,6 +28,8 @@ const features = [
 ];
 
 export default function Home() {
+  const items: string[] = undefined as unknown as string[];
+  items.map((i) => i);   // throws at SSR render, not at build
   return (
     <>
       {/* Hero */}
