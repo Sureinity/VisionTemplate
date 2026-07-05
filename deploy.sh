@@ -3,6 +3,8 @@ set -euo pipefail
 
 APP_DIR="/var/www/VisionTemplate"
 NGINX_UPSTREAM_CONF="/etc/nginx/conf.d/vision_upstream.conf"
+NGINX_VHOST_CONF="/etc/nginx/conf.d/vision.conf"
+NGINX_VHOST_SRC="$APP_DIR/nginx/vision.conf"
 IMAGE="visiontemplate"
 HEALTH_PATH="/api/ping"
 NETWORK="vision_network"
@@ -117,17 +119,39 @@ fi
 
 write_upstream "$STANDBY_PORT"
 
-if ! nginx -t; then
+# Install the app vhost if it isn't present yet (first deploy on a fresh host).
+# It references upstream vision_backend, so it must be installed only after the
+# upstream file exists above — otherwise `nginx -t` would fail. Track whether we
+# installed it this run so the rollback paths can remove it again.
+INSTALLED_VHOST_THIS_RUN="false"
+if [ ! -f "$NGINX_VHOST_CONF" ]; then
+  if [ -f "$NGINX_VHOST_SRC" ]; then
+    cp "$NGINX_VHOST_SRC" "$NGINX_VHOST_CONF"
+    INSTALLED_VHOST_THIS_RUN="true"
+    echo "Installed Nginx vhost from $NGINX_VHOST_SRC."
+  else
+    echo "Warning: vhost source $NGINX_VHOST_SRC not found; skipping vhost install."
+  fi
+fi
+
+rollback_nginx_changes() {
   restore_previous_upstream "$PREVIOUS_UPSTREAM_CONTENT" "$HAD_PREVIOUS_UPSTREAM"
+  if [ "$INSTALLED_VHOST_THIS_RUN" = "true" ]; then
+    rm -f "$NGINX_VHOST_CONF"
+  fi
+}
+
+if ! nginx -t; then
+  rollback_nginx_changes
   remove_container_if_exists "$NEW_CONTAINER"
-  echo "Nginx config test failed — restored previous upstream and removed new standby container. Active container and Nginx upstream stay unchanged. Rollback complete."
+  echo "Nginx config test failed — reverted Nginx changes and removed new standby container. Active container stays unchanged. Rollback complete."
   exit 1
 fi
 
 if ! nginx -s reload; then
-  restore_previous_upstream "$PREVIOUS_UPSTREAM_CONTENT" "$HAD_PREVIOUS_UPSTREAM"
+  rollback_nginx_changes
   remove_container_if_exists "$NEW_CONTAINER"
-  echo "Nginx reload failed — restored previous upstream and removed new standby container. Active container and Nginx upstream stay unchanged. Rollback complete."
+  echo "Nginx reload failed — reverted Nginx changes and removed new standby container. Active container stays unchanged. Rollback complete."
   exit 1
 fi
 
