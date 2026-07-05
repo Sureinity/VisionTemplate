@@ -39,3 +39,16 @@ export async function createNote(title: string, content: string): Promise<Note> 
 export async function deleteNote(id: number): Promise<void> {
   await pool.query("DELETE FROM notes WHERE id = $1", [id]);
 }
+
+// Lightweight liveness probe for the DB connection pool. Resolves true if a
+// trivial query round-trips, false on any connection/query error. Used by the
+// /api/ping health check the deploy script polls before cutting traffic over,
+// so a container that builds and boots but can't reach Postgres fails the gate.
+export async function pingDatabase(): Promise<boolean> {
+  try {
+    await pool.query("SELECT 1");
+    return true;
+  } catch {
+    return false;
+  }
+}

@@ -5,7 +5,7 @@ VisionTemplate deploys as a Blue-Green Docker app behind Nginx: Postgres runs on
 ## Files
 
 - `docker-compose.yml` starts only `vision_postgres` (`postgres:16-alpine`) on `vision_network`.
-- `deploy.sh` fast-forwards the VPS checkout to `origin/main`, builds the app image, starts the standby color, checks `GET /api/ping`, swaps Nginx, removes the old color, then prunes dangling images.
+- `deploy.sh` fast-forwards the VPS checkout to `origin/main`, builds the app image, starts the standby color, health-checks it on `GET /api/ping` (liveness + Postgres reachability — 503 if the DB is down) **and** the rendered root route `/` (catches a broken SSR render), swaps Nginx, removes the old color, then prunes dangling images.
 - `backup.sh` writes daily `pg_dump` backups to `/var/backups/postgres` and removes `.sql.gz` files older than 7 days.
 - `nginx/vision.conf` is the Nginx vhost for `vson.ghlensui.xyz`.
 - `.github/workflows/deploy.yml` runs `deploy.sh` over SSH after pushes to `main`.
@@ -105,5 +105,5 @@ No secrets belong in Git-tracked files.
 Rollback is proven by `deploy.sh` control flow:
 
 - If `docker build` fails, the script exits before removing the active container or touching `/etc/nginx/conf.d/vision_upstream.conf`.
-- If the standby container never returns HTTP `200` from `http://127.0.0.1:<standby-port>/api/ping`, the script removes only that failed standby container and leaves the active container and Nginx upstream unchanged.
+- If the standby container does not return HTTP `200` from **both** `http://127.0.0.1:<standby-port>/api/ping` (liveness + DB probe) and the rendered root route `/` (catches a broken SSR render that `/api/ping` alone would miss), the script removes only that failed standby container and leaves the active container and Nginx upstream unchanged.
 - Nginx is rewritten only after the standby health check passes; the old container is removed only after `nginx -t` and `nginx -s reload` both succeed.

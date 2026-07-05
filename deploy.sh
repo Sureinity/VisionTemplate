@@ -8,6 +8,10 @@ NGINX_VHOST_SRC="$APP_DIR/nginx/vision.conf"
 TLS_FULLCHAIN="/etc/letsencrypt/live/vson.ghlensui.xyz/fullchain.pem"
 IMAGE="visiontemplate"
 HEALTH_PATH="/api/ping"
+# Also smoke-check the rendered root route. /api/ping is a resource route with no
+# React layout, so it can stay 200 even when a broken root.tsx 500s every real
+# page. Requiring "/" to render too catches SSR/render breaks the ping misses.
+SMOKE_PATH="/"
 NETWORK="vision_network"
 ENV_FILE="$APP_DIR/.env"
 CONTAINER_PORT="3000"
@@ -108,16 +112,20 @@ docker run -d \
   "$IMAGE:$NEW_COLOR" >/dev/null
 
 HEALTH_URL="http://127.0.0.1:$STANDBY_PORT$HEALTH_PATH"
+SMOKE_URL="http://127.0.0.1:$STANDBY_PORT$SMOKE_PATH"
 HEALTH_OK="false"
 
+# A release is healthy only when BOTH pass: /api/ping (liveness + DB probe) and
+# the rendered root route (catches a broken SSR/root.tsx that ping alone misses).
 for attempt in $(seq 1 "$HEALTH_ATTEMPTS"); do
-  http_code="$(curl -s -o /dev/null -w '%{http_code}' "$HEALTH_URL" || true)"
-  if [ "$http_code" = "200" ]; then
+  ping_code="$(curl -s -o /dev/null -w '%{http_code}' "$HEALTH_URL" || true)"
+  smoke_code="$(curl -s -o /dev/null -w '%{http_code}' "$SMOKE_URL" || true)"
+  if [ "$ping_code" = "200" ] && [ "$smoke_code" = "200" ]; then
     HEALTH_OK="true"
-    echo "Health check passed for $NEW_CONTAINER at $HEALTH_URL."
+    echo "Health check passed for $NEW_CONTAINER ($HEALTH_PATH and $SMOKE_PATH both 200)."
     break
   fi
-  echo "Health check attempt $attempt/$HEALTH_ATTEMPTS returned '$http_code'; retrying in ${HEALTH_SLEEP_SECONDS}s."
+  echo "Health check attempt $attempt/$HEALTH_ATTEMPTS: $HEALTH_PATH='$ping_code' $SMOKE_PATH='$smoke_code'; retrying in ${HEALTH_SLEEP_SECONDS}s."
   sleep "$HEALTH_SLEEP_SECONDS"
 done
 
