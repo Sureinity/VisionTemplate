@@ -1,0 +1,80 @@
+# VisionTemplate Deployment
+
+VisionTemplate deploys as a Blue-Green Docker app behind Nginx: Postgres runs on the external `vision_network`, while app containers alternate between `vision_app_green` on host port `3000` and `vision_app_blue` on host port `3001`; Nginx proxies `vson.ghlensui.xyz` to the active port through `/etc/nginx/conf.d/vision_upstream.conf`.
+
+## Files
+
+- `docker-compose.yml` starts only `vision_postgres` (`postgres:16-alpine`) on `vision_network`.
+- `deploy.sh` pulls the repository on the VPS, builds the app image, starts the standby color, checks `GET /api/ping`, swaps Nginx, then removes the old color.
+- `backup.sh` writes daily `pg_dump` backups to `/var/backups/postgres` and removes `.sql.gz` files older than 7 days.
+- `nginx/vision.conf` is the Nginx vhost for `vson.ghlensui.xyz`.
+- `.github/workflows/deploy.yml` runs `deploy.sh` over SSH after pushes to `main`.
+- `.env.deploy.example` documents the VPS-only `.env` file.
+
+## First-time VPS bring-up
+
+Prerequisites already exist on the Ubuntu 22.04 VPS: Docker, Docker Compose plugin, Nginx, Certbot, and the external Docker network `vision_network`.
+
+1. Ensure the repository is checked out at `/var/www/VisionTemplate`.
+2. Copy `.env.deploy.example` to `/var/www/VisionTemplate/.env` on the VPS and replace `CHANGE_ME_STRONG_PASSWORD` with a strong real value.
+3. Start Postgres:
+
+   ```sh
+   cd /var/www/VisionTemplate
+   docker compose up -d postgres
+   ```
+
+4. Seed the database with the existing schema/data:
+
+   ```sh
+   docker exec -i vision_postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < db/setup.sql
+   ```
+
+   Run that from a shell where `POSTGRES_USER` and `POSTGRES_DB` match `/var/www/VisionTemplate/.env`, or source the env file first.
+
+5. Install the Nginx vhost and create the initial upstream file:
+
+   ```sh
+   cp /var/www/VisionTemplate/nginx/vision.conf /etc/nginx/conf.d/vision.conf
+   printf 'upstream vision_backend { server 127.0.0.1:3000; }\n' > /etc/nginx/conf.d/vision_upstream.conf
+   nginx -t
+   nginx -s reload
+   ```
+
+6. Run the first app deploy:
+
+   ```sh
+   bash /var/www/VisionTemplate/deploy.sh
+   ```
+
+## Nginx and Certbot
+
+Point DNS for `vson.ghlensui.xyz` at `VPS_HOST_IP`, install `nginx/vision.conf`, and verify Nginx is serving the port-80 vhost. Then run:
+
+```sh
+certbot --nginx -d vson.ghlensui.xyz
+```
+
+Certbot provisions the certificate paths, creates or updates the 443 TLS server block, and normally installs the HTTP-to-HTTPS redirect. The repository does not include fabricated certificate paths.
+
+## GitHub Actions secrets
+
+Configure these repository secrets before relying on `.github/workflows/deploy.yml`:
+
+- `VPS_HOST` — set to the VPS host/IP value, for example the operator-provided `VPS_HOST_IP`.
+- `VPS_USER` — SSH user that can run `/var/www/VisionTemplate/deploy.sh` and access Docker/Nginx as configured.
+- `SSH_PRIVATE_KEY` — private key for that SSH user.
+
+No secrets belong in Git-tracked files.
+
+## Backups
+
+`backup.sh` reads `/var/www/VisionTemplate/.env`, dumps `vision_postgres` with `pg_dump`, writes a timestamped `.sql.gz` under `/var/backups/postgres`, and deletes backups older than 7 days. Install the daily cron shown at the bottom of `backup.sh` if desired.
+
+## Rollback behavior
+
+Rollback is proven by `deploy.sh` control flow:
+
+- If `docker build` fails, the script exits before removing the active container or touching `/etc/nginx/conf.d/vision_upstream.conf`.
+- If the standby container never returns HTTP `200` from `http://127.0.0.1:<standby-port>/api/ping`, the script removes only that failed standby container and leaves the active container and Nginx upstream unchanged.
+- Nginx is rewritten only after the standby health check passes; the old container is removed only after `nginx -t` and `nginx -s reload` both succeed.
