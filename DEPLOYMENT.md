@@ -47,15 +47,34 @@ Prerequisites already exist on the Ubuntu 22.04 VPS: Docker, Docker Compose plug
    bash /var/www/VisionTemplate/deploy.sh
    ```
 
-## Nginx and Certbot
+## First-time TLS bootstrap
 
-Point DNS for `vson.ghlensui.xyz` at `VPS_HOST_IP`, install `nginx/vision.conf`, and verify Nginx is serving the port-80 vhost. Then run:
+`nginx/vision.conf` is a **TLS vhost**: it has a port-80 → 443 redirect and a 443
+server block that references `/etc/letsencrypt/live/vson.ghlensui.xyz/`. Because it
+references cert files, it cannot be loaded before the certificate exists — so
+`deploy.sh` installs it only when the cert is present (it skips the vhost with a
+warning otherwise). On a brand-new host, obtain the certificate first, then let
+`deploy.sh` install the vhost:
 
-```sh
-certbot --nginx -d vson.ghlensui.xyz
-```
+1. Point DNS: A record `vson.ghlensui.xyz` → the VPS IP. Confirm with
+   `dig +short vson.ghlensui.xyz`.
+2. Obtain the certificate using the standalone/webroot challenge (do **not** rely on
+   `--nginx` here — there is no TLS vhost to edit yet, and the app's port-80 block is
+   a pure redirect):
 
-Certbot provisions the certificate paths, creates or updates the 443 TLS server block, and normally installs the HTTP-to-HTTPS redirect. The repository does not include fabricated certificate paths.
+   ```sh
+   # nginx must be free on :80 for the standalone challenge, or use --webroot
+   certbot certonly --standalone -d vson.ghlensui.xyz --agree-tos -m <email>
+   ```
+
+   This also drops `/etc/letsencrypt/options-ssl-nginx.conf` and
+   `/etc/letsencrypt/ssl-dhparams.pem`, which the vhost includes.
+3. Re-run `deploy.sh`. With the cert now present, it installs `nginx/vision.conf`,
+   runs `nginx -t`, and reloads — serving HTTPS.
+
+Renewal is handled by certbot's systemd timer; verify with
+`certbot renew --dry-run`. The repository does not include fabricated certificate
+paths — only references to the standard Let's Encrypt live paths.
 
 ## GitHub Actions secrets
 

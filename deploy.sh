@@ -5,6 +5,7 @@ APP_DIR="/var/www/VisionTemplate"
 NGINX_UPSTREAM_CONF="/etc/nginx/conf.d/vision_upstream.conf"
 NGINX_VHOST_CONF="/etc/nginx/conf.d/vision.conf"
 NGINX_VHOST_SRC="$APP_DIR/nginx/vision.conf"
+TLS_FULLCHAIN="/etc/letsencrypt/live/vson.ghlensui.xyz/fullchain.pem"
 IMAGE="visiontemplate"
 HEALTH_PATH="/api/ping"
 NETWORK="vision_network"
@@ -125,12 +126,17 @@ write_upstream "$STANDBY_PORT"
 # installed it this run so the rollback paths can remove it again.
 INSTALLED_VHOST_THIS_RUN="false"
 if [ ! -f "$NGINX_VHOST_CONF" ]; then
-  if [ -f "$NGINX_VHOST_SRC" ]; then
+  if [ ! -f "$NGINX_VHOST_SRC" ]; then
+    echo "Warning: vhost source $NGINX_VHOST_SRC not found; skipping vhost install."
+  elif [ ! -f "$TLS_FULLCHAIN" ]; then
+    # The vhost is TLS and references the Let's Encrypt cert; installing it before
+    # the cert exists would fail `nginx -t`. On a fresh host, obtain the cert first
+    # (see DEPLOYMENT.md "First-time TLS bootstrap"), then re-run deploy.sh.
+    echo "Warning: TLS cert $TLS_FULLCHAIN not found; skipping vhost install until certbot has run."
+  else
     cp "$NGINX_VHOST_SRC" "$NGINX_VHOST_CONF"
     INSTALLED_VHOST_THIS_RUN="true"
     echo "Installed Nginx vhost from $NGINX_VHOST_SRC."
-  else
-    echo "Warning: vhost source $NGINX_VHOST_SRC not found; skipping vhost install."
   fi
 fi
 
