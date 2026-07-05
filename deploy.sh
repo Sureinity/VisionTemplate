@@ -49,7 +49,23 @@ restore_previous_upstream() {
 }
 
 cd "$APP_DIR"
-git pull
+
+# Always deploy origin/main, regardless of what the host has checked out.
+# fetch -> checkout main -> fast-forward only. Any failure aborts before a
+# single container or Nginx file is touched, so the active release is untouched.
+DEPLOY_BRANCH="main"
+if ! git fetch origin "$DEPLOY_BRANCH"; then
+  echo "git fetch failed (network/remote) — aborting before any deploy action. Active container stays unchanged."
+  exit 1
+fi
+if ! git checkout "$DEPLOY_BRANCH"; then
+  echo "git checkout $DEPLOY_BRANCH failed — aborting before any deploy action. Active container stays unchanged."
+  exit 1
+fi
+if ! git merge --ff-only "origin/$DEPLOY_BRANCH"; then
+  echo "git merge --ff-only failed (host has diverging local commits or a dirty tree on $DEPLOY_BRANCH) — aborting. Active container stays unchanged."
+  exit 1
+fi
 
 ACTIVE_COLOR=""
 ACTIVE_CONTAINER=""
@@ -165,5 +181,9 @@ if [ -n "$ACTIVE_CONTAINER" ]; then
   remove_container_if_exists "$ACTIVE_CONTAINER"
   echo "Stopped and removed old container $ACTIVE_CONTAINER."
 fi
+
+# Reclaim disk from images orphaned by this build. Only runs after a successful
+# cutover (never on a rollback path); prune failure must not fail the deploy.
+docker image prune -f >/dev/null 2>&1 || echo "Warning: docker image prune failed; continuing."
 
 echo "Deployment complete: $NEW_CONTAINER is active on host port $STANDBY_PORT."

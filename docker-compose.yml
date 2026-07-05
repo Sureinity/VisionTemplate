@@ -9,6 +9,10 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # Auto-run schema + seed on FIRST init only (empty data volume). Postgres
+      # ignores this dir once pgdata is already populated, so re-deploys and
+      # already-seeded hosts are untouched.
+      - ./db/setup.sql:/docker-entrypoint-initdb.d/10-setup.sql:ro
     networks:
       - vision_network
     healthcheck:

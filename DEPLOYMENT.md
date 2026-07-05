@@ -5,7 +5,7 @@ VisionTemplate deploys as a Blue-Green Docker app behind Nginx: Postgres runs on
 ## Files
 
 - `docker-compose.yml` starts only `vision_postgres` (`postgres:16-alpine`) on `vision_network`.
-- `deploy.sh` pulls the repository on the VPS, builds the app image, starts the standby color, checks `GET /api/ping`, swaps Nginx, then removes the old color.
+- `deploy.sh` fast-forwards the VPS checkout to `origin/main`, builds the app image, starts the standby color, checks `GET /api/ping`, swaps Nginx, removes the old color, then prunes dangling images.
 - `backup.sh` writes daily `pg_dump` backups to `/var/backups/postgres` and removes `.sql.gz` files older than 7 days.
 - `nginx/vision.conf` is the Nginx vhost for `vson.ghlensui.xyz`.
 - `.github/workflows/deploy.yml` runs `deploy.sh` over SSH after pushes to `main`.
@@ -24,7 +24,17 @@ Prerequisites already exist on the Ubuntu 22.04 VPS: Docker, Docker Compose plug
    docker compose up -d postgres
    ```
 
-4. Seed the database with the existing schema/data:
+4. Seeding is automatic on first init. `docker-compose.yml` mounts `db/setup.sql`
+   into the container's `/docker-entrypoint-initdb.d/`, which Postgres runs once
+   when the `pgdata` volume is first created — so step 3 already seeds a fresh
+   host. Confirm the rows landed:
+
+   ```sh
+   docker exec -i vision_postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT count(*) FROM notes;"
+   ```
+
+   Only if the volume already existed *before* this mount was added (Postgres
+   skips the init dir on a non-empty volume) seed manually:
 
    ```sh
    docker exec -i vision_postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < db/setup.sql
