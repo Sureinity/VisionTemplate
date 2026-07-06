@@ -1,0 +1,3 @@
+# Copy to terraform.tfvars and fill in real values. terraform.tfvars is gitignored.
+do_token            = "DO_API_TOKEN"
+ssh_public_key_path = "SSH_PUBLIC_KEY_PATH"

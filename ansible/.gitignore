@@ -1,0 +1,10 @@
+*.retry
+*.vault
+*.vault.yml
+*.vault.yaml
+vault.yml
+vault.yaml
+secrets.yml
+secrets.yaml
+*.secret
+*.secrets

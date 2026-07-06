@@ -1,0 +1,158 @@
+---
+- name: Bootstrap Ubuntu VPS for Dockerized app hosting
+  hosts: all
+  become: true
+  vars:
+    app_dir: /var/www/VisionTemplate
+    app_repo_url: https://github.com/Sureinity/VisionTemplate.git
+    app_repo_branch: main
+    backup_dir: /var/backups/postgres
+    backup_log: /var/log/vision-postgres-backup.log
+    docker_apt_key_url: https://download.docker.com/linux/ubuntu/gpg
+    docker_apt_key_path: /etc/apt/keyrings/docker.asc
+    docker_apt_repo: >-
+      deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc]
+      https://download.docker.com/linux/ubuntu jammy stable
+    base_packages:
+      - git
+      - curl
+      - ca-certificates
+      - nginx
+      - certbot
+      - python3-certbot-nginx
+      - cron
+    docker_packages:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+
+  tasks:
+    - name: Update apt cache and install base packages
+      ansible.builtin.apt:
+        name: "{{ base_packages }}"
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Ensure apt keyring directory exists
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Add Docker official GPG key
+      ansible.builtin.get_url:
+        url: "{{ docker_apt_key_url }}"
+        dest: "{{ docker_apt_key_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Add Docker official APT repository for Ubuntu jammy
+      ansible.builtin.apt_repository:
+        repo: "{{ docker_apt_repo }}"
+        filename: docker
+        state: present
+        update_cache: true
+
+    - name: Install Docker Engine and Compose plugin packages
+      ansible.builtin.apt:
+        name: "{{ docker_packages }}"
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Ensure required services are started and enabled
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: started
+        enabled: true
+      loop:
+        - docker
+        - nginx
+        - cron
+
+    - name: Create app directory
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Clone application repository if absent
+      ansible.builtin.git:
+        repo: "{{ app_repo_url }}"
+        dest: "{{ app_dir }}"
+        version: "{{ app_repo_branch }}"
+        # First clone only. deploy.sh owns every pull after this, so Ansible
+        # must not reset the working tree on re-runs.
+        update: false
+        force: false
+
+    # Seeds a first-time .env from the committed example. force:false keeps
+    # operator-provided secrets from being clobbered on re-runs; 0600 because
+    # the file holds database credentials.
+    - name: Seed application .env from example if absent
+      ansible.builtin.copy:
+        src: "{{ app_dir }}/.env.deploy.example"
+        dest: "{{ app_dir }}/.env"
+        remote_src: true
+        force: false
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Create Postgres backup directory
+      ansible.builtin.file:
+        path: "{{ backup_dir }}"
+        state: directory
+        owner: root
+        group: root
+        # Dumps may contain data — keep them off world-readable.
+        mode: "0750"
+
+    - name: Schedule daily Postgres backup
+      ansible.builtin.cron:
+        name: "vision postgres daily backup"
+        minute: "0"
+        hour: "2"
+        # Invoke via bash so this does not depend on backup.sh's execute bit.
+        job: "bash {{ app_dir }}/backup.sh >> {{ backup_log }} 2>&1"
+        user: root
+        state: present
+
+    - name: Ensure external Docker network exists
+      ansible.builtin.shell: |
+        set -o pipefail
+        docker network inspect vision_network >/dev/null 2>&1 || docker network create vision_network
+      args:
+        executable: /bin/bash
+      register: docker_network_result
+      changed_when: docker_network_result.stdout | length > 0
+
+    - name: Remove default Nginx enabled site if present
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Check for enabled Nginx sites
+      ansible.builtin.find:
+        paths: /etc/nginx/sites-enabled
+        file_type: any
+      register: nginx_enabled_sites
+
+    - name: Validate Nginx config when sites are enabled
+      ansible.builtin.command: nginx -t
+      changed_when: false
+      when: nginx_enabled_sites.matched > 0
+
+    - name: Reload Nginx when sites are enabled
+      ansible.builtin.systemd:
+        name: nginx
+        state: reloaded
+      when: nginx_enabled_sites.matched > 0
